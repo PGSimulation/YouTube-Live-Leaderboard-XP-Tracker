@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTube Live Leaderboard XP Tracker
 // @namespace    https://openai.com/
-// @version      12.11
-// @description  NAPRAWIONA WERSJA: Przywraca wyświetlanie tytułów w liście wyboru, poprawia dodawanie nowych streamów, zapisuje dashboard jako HTML z unikalną nazwą, zachowuje autoclick, autorefresh i wykresy/tabele.
+// @version      12.16
+// @description  NAPRAWIONA WERSJA: Poprawia kodowanie polskich znaków, ogranicza otwieranie dashboardu do jednej strony, zastępuje prompt usuwania streamów estetycznym oknem dialogowym, zachowuje autoclick, auto-odświeżanie dashboardu, autorefresh czatu co 3s, odświeżanie strony co 2 minuty.
 // @match        *://*.youtube.com/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_openInTab
@@ -25,7 +25,7 @@
             console.warn('[YT XP Tracker] Brak ID wideo w URL.');
             return;
         }
-        console.log(`[YT XP Tracker] v12.11 Wykryto stronę /watch dla videoId: ${videoId}`);
+        console.log(`[YT XP Tracker] v12.16 Wykryto stronę /watch dla videoId: ${videoId}`);
 
         let attempts = 0;
         const maxAttempts = 3;
@@ -99,11 +99,14 @@
                 isReplayInProgress = true;
                 replayMacro().finally(() => { isReplayInProgress = false; });
             }
-        }, 60 * 1000);
+        }, 3000); // Zbieranie danych co 3 sekundy
 
-        setTimeout(() => window.location.reload(), 60 * 3000); // 1 minuta
-        GM_registerMenuCommand("🔴 Nagraj NOWE Makro Kliknięcia", startMacroRecording);
-        GM_registerMenuCommand("🔍 Pokaż Zapisane Makro", showRecordedMacro);
+        // Odświeżanie strony co 2 minuty
+        console.log(`[YT XP Tracker] Zaplanowano odświeżanie strony dla videoId: ${videoId} co 2 minuty.`);
+        setTimeout(() => {
+            console.log(`[YT XP Tracker] Odświeżam stronę dla videoId: ${videoId}`);
+            window.location.reload();
+        }, 2 * 60 * 1000); // 2 minuty
     }
 
     // --- System Nagrywania i Odtwarzania Makr ---
@@ -247,6 +250,133 @@
             alert("Brak zapisanego makra.");
         }
     }
+
+    // --- Nowa funkcja: Estetyczne usuwanie danych streamów ---
+    GM_registerMenuCommand("🗑️ Usuń dane streamów", () => {
+        const streamKeys = Object.keys(localStorage).filter(k => /^yt_xp_tracker_[\w-]{11}$/.test(k));
+        const streams = streamKeys.map(key => {
+            try {
+                const data = JSON.parse(localStorage.getItem(key));
+                return {
+                    key,
+                    videoId: data.videoId,
+                    title: data.title && data.title !== `Stream (${data.videoId})` ? data.title : `${data.title} (ID: ${data.videoId})`
+                };
+            } catch (error) {
+                console.error(`[YT XP Tracker] Błąd parsowania danych dla klucza ${key}:`, error);
+                return null;
+            }
+        }).filter(s => s).sort((a, b) => a.title.localeCompare(b.title));
+
+        if (streams.length === 0) {
+            alert("Brak zapisanych streamów do usunięcia.");
+            return;
+        }
+
+        // Tworzenie okna dialogowego
+        const dialog = document.createElement('div');
+        dialog.id = 'stream-delete-dialog';
+        dialog.innerHTML = `
+            <div class="dialog-content">
+                <h2>Usuń dane streamów</h2>
+                <p>Wybierz stream do usunięcia:</p>
+                <ul class="stream-list">
+                    ${streams.map(s => `
+                        <li>
+                            <span>${s.title}</span>
+                            <button onclick="confirmDelete('${s.key}', '${s.title.replace(/'/g, "\\'")}')">Usuń</button>
+                        </li>
+                    `).join('')}
+                </ul>
+                <button onclick="document.getElementById('stream-delete-dialog').remove()">Zamknij</button>
+            </div>
+        `;
+        document.body.appendChild(dialog);
+
+        // Stylizacja okna dialogowego
+        GM_addStyle(`
+            #stream-delete-dialog {
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: #222;
+                color: #eee;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+                z-index: 10000;
+                max-width: 500px;
+                width: 90%;
+                max-height: 80vh;
+                overflow-y: auto;
+                font-family: 'Segoe UI', sans-serif;
+            }
+            #stream-delete-dialog .dialog-content {
+                padding: 20px;
+            }
+            #stream-delete-dialog h2 {
+                margin: 0 0 10px;
+                font-weight: 300;
+                border-bottom: 1px solid #444;
+                padding-bottom: 10px;
+            }
+            #stream-delete-dialog .stream-list {
+                list-style: none;
+                padding: 0;
+                margin: 0 0 20px;
+                max-height: 50vh;
+                overflow-y: auto;
+            }
+            #stream-delete-dialog .stream-list li {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 10px;
+                border-bottom: 1px solid #444;
+            }
+            #stream-delete-dialog .stream-list li span {
+                flex-grow: 1;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                margin-right: 10px;
+            }
+            #stream-delete-dialog button {
+                background: #4a4a4a;
+                color: white;
+                border: none;
+                padding: 8px 12px;
+                border-radius: 5px;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+            #stream-delete-dialog button:hover {
+                background: #666;
+            }
+        `);
+
+        // Funkcja potwierdzania usunięcia
+        window.confirmDelete = (key, title) => {
+            const confirmDialog = document.createElement('div');
+            confirmDialog.id = 'confirm-delete-dialog';
+            confirmDialog.innerHTML = `
+                <div class="dialog-content">
+                    <h2>Potwierdź usunięcie</h2>
+                    <p>Czy na pewno usunąć dane dla streama: ${title}?</p>
+                    <button onclick="deleteStream('${key}'); document.getElementById('confirm-delete-dialog').remove(); document.getElementById('stream-delete-dialog').remove()">Usuń</button>
+                    <button onclick="document.getElementById('confirm-delete-dialog').remove()">Anuluj</button>
+                </div>
+            `;
+            document.body.appendChild(confirmDialog);
+        };
+
+        // Funkcja usuwania streamu
+        window.deleteStream = (key) => {
+            localStorage.removeItem(key);
+            alert(`Dane dla streama zostały usunięte.`);
+            console.log(`[YT XP Tracker] Usunięto dane dla klucza: ${key}`);
+        };
+    });
 
     // --- Globalne komendy menu ---
     GM_registerMenuCommand("🗂️ Otwórz Przeglądarkę Danych", () => {
@@ -396,16 +526,21 @@
         console.log("[YT XP Tracker] Przetworzone streamy:", streams);
 
         if (streams.length === 0) {
-            const blob = new Blob(['<h1>Brak danych streamów</h1><p>Nie znaleziono żadnych zapisanych danych streamów w localStorage. Upewnij się, że skrypt zebrał dane podczas działania czatu.</p>'], { type: 'text/html' });
+            const blob = new Blob([String.raw`<h1>Brak danych streamów</h1><p>Nie znaleziono żadnych zapisanych danych streamów w localStorage. Upewnij się, że skrypt zebrał dane podczas działania czatu.</p>`], { type: 'text/html' });
             const url = URL.createObjectURL(blob);
-            window.open(url);
+            const win = window.open(url);
+            if (!win) {
+                console.warn("[YT XP Tracker] Nie udało się otworzyć karty. Upewnij się, że pop-upy nie są blokowane.");
+                alert("Nie udało się otworzyć dashboardu. Spróbuj pobrać plik HTML z opcji 'Pobierz Dashboard jako HTML'.");
+            }
             setTimeout(() => URL.revokeObjectURL(url), 60000);
             return;
         }
 
-        const viewerHTML = `
+        const viewerHTML = String.raw`
             <!DOCTYPE html><html lang="pl">
             <head>
+                <meta charset="UTF-8">
                 <title>Przeglądarka Danych XP</title>
                 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
                 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -474,24 +609,106 @@
                                 return;
                             }
 
+                            const colorMap = new Map();
+                            let lineChart, pieChart;
+                            let topUsers = [];
+
                             const _aggregateChangesPerUser = (h) => {
                                 if (!h || h.length === 0) return [];
                                 const users = new Map();
-                                h.forEach(e => e.data.forEach(({ name, xp }) => { if (!users.has(name)) users.set(name, []); users.get(name).push({ timestamp: e.timestamp, xp }); }));
+                                h.forEach(e => e.data.forEach(({ name, xp }) => {
+                                    if (!users.has(name)) users.set(name, []);
+                                    users.get(name).push({ timestamp: e.timestamp, xp });
+                                }));
                                 return Array.from(users.entries()).map(([name, entries]) => {
                                     entries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-                                    const first = entries[0]; const last = entries[entries.length - 1];
+                                    const first = entries[0];
+                                    const last = entries[entries.length - 1];
                                     let maxJump = 0;
-                                    if (entries.length > 1) { for (let i = 1; i < entries.length; i++) { const jump = entries[i].xp - entries[i - 1].xp; if (jump > maxJump) maxJump = jump; } }
+                                    if (entries.length > 1) {
+                                        for (let i = 1; i < entries.length; i++) {
+                                            const jump = entries[i].xp - entries[i - 1].xp;
+                                            if (jump > maxJump) maxJump = jump;
+                                        }
+                                    }
                                     return { name, start: first.xp, end: last.xp, delta: maxJump, timeline: entries };
                                 }).sort((a, b) => b.end - a.end);
                             };
 
+                            function updateDashboard() {
+                                try {
+                                    let fullData;
+                                    try {
+                                        fullData = JSON.parse(localStorage.getItem(streamKey) || '{}');
+                                    } catch (error) {
+                                        console.error("[Dashboard] Błąd parsowania danych podczas aktualizacji dla klucza:", streamKey, error, "Dane:", localStorage.getItem(streamKey));
+                                        return;
+                                    }
+                                    const history = fullData.history || [];
+                                    if (history.length === 0) return;
+
+                                    const summary = _aggregateChangesPerUser(history);
+                                    topUsers = summary.slice(0, 50);
+                                    topUsers.forEach(user => {
+                                        if (!colorMap.has(user.name)) {
+                                            colorMap.set(user.name, '#' + (Math.random().toString(16) + '000000').substring(2, 8));
+                                        }
+                                    });
+
+                                    const newDatasets = topUsers.map(user => ({
+                                        label: user.name,
+                                        data: user.timeline.map(p => ({ x: p.timestamp, y: p.xp })),
+                                        fill: false,
+                                        borderColor: colorMap.get(user.name),
+                                        borderWidth: 2,
+                                        tension: 0.1
+                                    }));
+
+                                    const userList = document.querySelector('.user-list');
+                                    if (userList) {
+                                        userList.innerHTML = topUsers.map((u, i) => \`
+                                            <label title="\${u.name}">
+                                                <input type='checkbox' checked onchange='toggleUser(\${i})'>
+                                                <span class="color-swatch" style="background-color: \${colorMap.get(u.name)};"></span>
+                                                <span>\${u.name}</span>
+                                            </label>
+                                        \`).join('');
+                                    }
+
+                                    document.getElementById('rankingTableBody').innerHTML = topUsers.map((u, i) => \`
+                                        <tr>
+                                            <td>\${i + 1}</td>
+                                            <td><span class="color-swatch" style="background-color: \${colorMap.get(u.name) || '#ccc'}; display: inline-block; vertical-align: middle; margin-right: 8px;"></span>\${u.name}</td>
+                                            <td>\${u.end.toLocaleString()}</td>
+                                            <td>\${u.delta > 0 ? '+' : ''}\${u.delta.toLocaleString()}</td>
+                                        </tr>
+                                    \`).join('');
+
+                                    const topGainers = [...summary].sort((a, b) => b.delta - a.delta).slice(0, 10);
+                                    pieChart.data.labels = topGainers.map(u => u.name);
+                                    pieChart.data.datasets[0].data = topGainers.map(u => u.delta > 0 ? u.delta : 0);
+                                    pieChart.data.datasets[0].backgroundColor = topGainers.map(u => colorMap.get(u.name) || '#cccccc');
+                                    pieChart.update('none');
+
+                                    lineChart.data.datasets = newDatasets;
+                                    lineChart.update('none');
+                                    document.getElementById('lastUpdated').textContent = \`Ostatnia aktualizacja: \${formatTime24h(new Date())}\`;
+                                } catch (error) {
+                                    console.error("[Dashboard] Błąd podczas aktualizacji dashboardu:", error);
+                                }
+                            }
+
                             const summary = _aggregateChangesPerUser(history);
-                            const topUsers = summary.slice(0, 50);
-                            const colorMap = new Map();
+                            topUsers = summary.slice(0, 50);
                             topUsers.forEach(user => colorMap.set(user.name, '#' + (Math.random().toString(16) + '000000').substring(2, 8)));
-                            const initialDatasets = topUsers.map(user => ({ label: user.name, data: user.timeline.map(p => ({ x: p.timestamp, y: p.xp })), fill: false, borderColor: colorMap.get(user.name), borderWidth: 2, tension: 0.1 }));
+                            const initialDatasets = topUsers.map(user => ({
+                                label: user.name,
+                                data: user.timeline.map(p => ({ x: p.timestamp, y: p.xp })),
+                                fill: false,
+                                borderColor: colorMap.get(user.name),
+                                borderWidth: 2,
+                                tension: 0.1
+                            }));
                             const topGainers = [...summary].sort((a, b) => b.delta - a.delta).slice(0, 10);
                             const allXpValues = topUsers.flatMap(u => u.timeline.map(p => p.xp));
                             const globalMinXP = allXpValues.length > 0 ? Math.floor(Math.min(...allXpValues)) : 0;
@@ -512,7 +729,7 @@
                                                 <label>Min Y: <input type="number" id="minY" value="\${paddedMinXP}"></label>
                                                 <label>Max Y: <input type="number" id="maxY" value="\${paddedMaxXP}"></label>
                                                 <button onclick="applyScale()">Zastosuj</button>
-                                                <label><input type="checkbox" id="logScaleToggle" onchange="toggleLogScale()"> Skala logarymiczna</label>
+                                                <label><input type="checkbox" id="logScaleToggle" onchange="toggleLogScale()"> Skala logarytmiczna</label>
                                             </div>
                                         </div>
                                         <div class="canvas-container"><canvas id="lineChart"></canvas></div>
@@ -536,51 +753,47 @@
                             \`;
                             document.getElementById('dashboardContent').innerHTML = dashboardHTML;
 
-                            let lineChart, pieChart;
                             const formatTime24h = (date) => date.toLocaleTimeString('pl-PL', { hour12: false });
-                            function updateDashboard() {
-                                try {
-                                    let fullData;
-                                    try {
-                                        fullData = JSON.parse(localStorage.getItem(streamKey) || '{}');
-                                    } catch (error) {
-                                        console.error("[Dashboard] Błąd parsowania danych podczas aktualizacji dla klucza:", streamKey, error, "Dane:", localStorage.getItem(streamKey));
-                                        return;
-                                    }
-                                    const history = fullData.history || [];
-                                    if (history.length === 0) return;
-                                    const summary = _aggregateChangesPerUser(history);
-                                    const topUsers = summary.slice(0, 50);
-                                    document.getElementById('rankingTableBody').innerHTML = topUsers.map((u, i) => \`<tr><td>\${i + 1}</td><td><span class="color-swatch" style="background-color: \${colorMap.get(u.name) || '#ccc'}; display: inline-block; vertical-align: middle; margin-right: 8px;"></span>\${u.name}</td><td>\${u.end.toLocaleString()}</td><td>\${u.delta > 0 ? '+' : ''}\${u.delta.toLocaleString()}</td></tr>\`).join('');
-                                    const newDataMap = new Map(topUsers.map(u => [u.name, u.timeline.map(p => ({ x: p.timestamp, y: p.xp }))]));
-                                    lineChart.data.datasets.forEach(dataset => { if (newDataMap.has(dataset.label)) { dataset.data = newDataMap.get(dataset.label); } });
-                                    lineChart.update('none');
-                                    const topGainers = [...summary].sort((a, b) => b.delta - a.delta).slice(0, 10);
-                                    pieChart.data.labels = topGainers.map(u => u.name);
-                                    pieChart.data.datasets[0].data = topGainers.map(u => u.delta > 0 ? u.delta : 0);
-                                    pieChart.data.datasets[0].backgroundColor = topGainers.map(u => colorMap.get(u.name) || '#cccccc');
-                                    pieChart.update('none');
-                                    document.getElementById('lastUpdated').textContent = \`Ostatnia aktualizacja: \${formatTime24h(new Date())}\`;
-                                } catch (error) {
-                                    console.error("[Dashboard] Błąd podczas aktualizacji dashboardu:", error);
-                                }
-                            }
 
                             function initializeCharts() {
                                 try {
                                     const ctxLine = document.getElementById('lineChart').getContext('2d');
-                                    lineChart = new Chart(ctxLine, { type: 'line', data: { datasets: initialDatasets }, options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: { intersect: false, mode: 'index' }, plugins: { title: { display: true, text: 'XP w czasie', color: '#eee', font: { size: 18 } }, legend: { display: false } }, scales: { x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy HH:mm:ss', displayFormats: { minute: 'HH:mm', hour: 'HH:mm' } }, ticks: { source: 'data', color: '#ccc', maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: 20 } }, y: { type: 'linear', ticks: { color: '#ccc' } } } } });
+                                    lineChart = new Chart(ctxLine, {
+                                        type: 'line',
+                                        data: { datasets: initialDatasets },
+                                        options: {
+                                            animation: false,
+                                            responsive: true,
+                                            maintainAspectRatio: false,
+                                            interaction: { intersect: false, mode: 'index' },
+                                            plugins: { title: { display: true, text: 'XP w czasie', color: '#eee', font: { size: 18 } }, legend: { display: false } },
+                                            scales: {
+                                                x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy HH:mm:ss', displayFormats: { minute: 'HH:mm', hour: 'HH:mm' } }, ticks: { source: 'data', color: '#ccc', maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: 20 } },
+                                                y: { type: 'linear', ticks: { color: '#ccc' } }
+                                            }
+                                        }
+                                    });
                                     const ctxPie = document.getElementById('pieChart').getContext('2d');
-                                    pieChart = new Chart(ctxPie, { type: 'pie', data: { labels: topGainers.map(u => u.name), datasets: [{ data: topGainers.map(u => u.delta > 0 ? u.delta : 0), backgroundColor: topGainers.map(u => colorMap.get(u.name) || '#cccccc') }] }, options: { animation: false, responsive: true, plugins: { legend: { position: 'top', labels: { color: '#eee' } } } } });
+                                    pieChart = new Chart(ctxPie, {
+                                        type: 'pie',
+                                        data: {
+                                            labels: topGainers.map(u => u.name),
+                                            datasets: [{ data: topGainers.map(u => u.delta > 0 ? u.delta : 0), backgroundColor: topGainers.map(u => colorMap.get(u.name) || '#cccccc') }]
+                                        },
+                                        options: { animation: false, responsive: true, plugins: { legend: { position: 'top', labels: { color: '#eee' } } } }
+                                    });
                                     updateDashboard();
-                                    setInterval(updateDashboard, 60 * 2000);
+                                    setInterval(updateDashboard, 3000); // Auto-odświeżanie co 3 sekundy
                                 } catch (error) {
                                     console.error("[Dashboard] Błąd podczas inicjalizacji wykresów:", error);
                                     document.getElementById('dashboardContent').innerHTML = '<div class="placeholder">Błąd podczas ładowania wykresów. Sprawdź konsolę (F12).</div>';
                                 }
                             }
 
-                            window.toggleUser = (index) => { lineChart.setDatasetVisibility(index, !lineChart.isDatasetVisible(index)); lineChart.update(); };
+                            window.toggleUser = (index) => {
+                                lineChart.setDatasetVisibility(index, !lineChart.isDatasetVisible(index));
+                                lineChart.update();
+                            };
                             window.applyScale = () => {
                                 const minVal = document.getElementById('minY').value;
                                 const maxVal = document.getElementById('maxY').value;
@@ -622,12 +835,13 @@
             </html>
         `;
         try {
-            const blob = new Blob([viewerHTML], { type: 'text/html' });
+            const blob = new Blob([viewerHTML], { type: 'text/html;charset=utf-8' });
             const url = URL.createObjectURL(blob);
-            const win = window.open(url);
-            if (!win) {
-                console.warn("[YT XP Tracker] Nie udało się otworzyć karty. Upewnij się, że pop-upy nie są blokowane.");
-                alert("Nie udało się otworzyć dashboardu. Spróbuj pobrać plik HTML z opcji 'Pobierz Dashboard jako HTML'.");
+            const existingWindow = window.open('', 'xp_tracker_dashboard');
+            if (existingWindow && !existingWindow.closed) {
+                existingWindow.location.href = url;
+            } else {
+                window.open(url, 'xp_tracker_dashboard');
             }
             setTimeout(() => URL.revokeObjectURL(url), 60000);
         } catch (error) {
@@ -668,9 +882,10 @@
             return;
         }
 
-        const viewerHTML = `
+        const viewerHTML = String.raw`
             <!DOCTYPE html><html lang="pl">
             <head>
+                <meta charset="UTF-8">
                 <title>Przeglądarka Danych XP</title>
                 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
                 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
@@ -732,24 +947,106 @@
                                 return;
                             }
 
+                            const colorMap = new Map();
+                            let lineChart, pieChart;
+                            let topUsers = [];
+
                             const _aggregateChangesPerUser = (h) => {
                                 if (!h || h.length === 0) return [];
                                 const users = new Map();
-                                h.forEach(e => e.data.forEach(({ name, xp }) => { if (!users.has(name)) users.set(name, []); users.get(name).push({ timestamp: e.timestamp, xp }); }));
+                                h.forEach(e => e.data.forEach(({ name, xp }) => {
+                                    if (!users.has(name)) users.set(name, []);
+                                    users.get(name).push({ timestamp: e.timestamp, xp });
+                                }));
                                 return Array.from(users.entries()).map(([name, entries]) => {
                                     entries.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-                                    const first = entries[0]; const last = entries[entries.length - 1];
+                                    const first = entries[0];
+                                    const last = entries[entries.length - 1];
                                     let maxJump = 0;
-                                    if (entries.length > 1) { for (let i = 1; i < entries.length; i++) { const jump = entries[i].xp - entries[i - 1].xp; if (jump > maxJump) maxJump = jump; } }
+                                    if (entries.length > 1) {
+                                        for (let i = 1; i < entries.length; i++) {
+                                            const jump = entries[i].xp - entries[i - 1].xp;
+                                            if (jump > maxJump) maxJump = jump;
+                                        }
+                                    }
                                     return { name, start: first.xp, end: last.xp, delta: maxJump, timeline: entries };
                                 }).sort((a, b) => b.end - a.end);
                             };
 
+                            function updateDashboard() {
+                                try {
+                                    let fullData;
+                                    try {
+                                        fullData = JSON.parse(localStorage.getItem(streamKey) || '{}');
+                                    } catch (error) {
+                                        console.error("[Dashboard] Błąd parsowania danych podczas aktualizacji dla klucza:", streamKey, error, "Dane:", localStorage.getItem(streamKey));
+                                        return;
+                                    }
+                                    const history = fullData.history || [];
+                                    if (history.length === 0) return;
+
+                                    const summary = _aggregateChangesPerUser(history);
+                                    topUsers = summary.slice(0, 50);
+                                    topUsers.forEach(user => {
+                                        if (!colorMap.has(user.name)) {
+                                            colorMap.set(user.name, '#' + (Math.random().toString(16) + '000000').substring(2, 8));
+                                        }
+                                    });
+
+                                    const newDatasets = topUsers.map(user => ({
+                                        label: user.name,
+                                        data: user.timeline.map(p => ({ x: p.timestamp, y: p.xp })),
+                                        fill: false,
+                                        borderColor: colorMap.get(user.name),
+                                        borderWidth: 2,
+                                        tension: 0.1
+                                    }));
+
+                                    const userList = document.querySelector('.user-list');
+                                    if (userList) {
+                                        userList.innerHTML = topUsers.map((u, i) => \`
+                                            <label title="\${u.name}">
+                                                <input type='checkbox' checked onchange='toggleUser(\${i})'>
+                                                <span class="color-swatch" style="background-color: \${colorMap.get(u.name)};"></span>
+                                                <span>\${u.name}</span>
+                                            </label>
+                                        \`).join('');
+                                    }
+
+                                    document.getElementById('rankingTableBody').innerHTML = topUsers.map((u, i) => \`
+                                        <tr>
+                                            <td>\${i + 1}</td>
+                                            <td><span class="color-swatch" style="background-color: \${colorMap.get(u.name) || '#ccc'}; display: inline-block; vertical-align: middle; margin-right: 8px;"></span>\${u.name}</td>
+                                            <td>\${u.end.toLocaleString()}</td>
+                                            <td>\${u.delta > 0 ? '+' : ''}\${u.delta.toLocaleString()}</td>
+                                        </tr>
+                                    \`).join('');
+
+                                    const topGainers = [...summary].sort((a, b) => b.delta - a.delta).slice(0, 10);
+                                    pieChart.data.labels = topGainers.map(u => u.name);
+                                    pieChart.data.datasets[0].data = topGainers.map(u => u.delta > 0 ? u.delta : 0);
+                                    pieChart.data.datasets[0].backgroundColor = topGainers.map(u => colorMap.get(u.name) || '#cccccc');
+                                    pieChart.update('none');
+
+                                    lineChart.data.datasets = newDatasets;
+                                    lineChart.update('none');
+                                    document.getElementById('lastUpdated').textContent = \`Ostatnia aktualizacja: \${formatTime24h(new Date())}\`;
+                                } catch (error) {
+                                    console.error("[Dashboard] Błąd podczas aktualizacji dashboardu:", error);
+                                }
+                            }
+
                             const summary = _aggregateChangesPerUser(history);
-                            const topUsers = summary.slice(0, 50);
-                            const colorMap = new Map();
+                            topUsers = summary.slice(0, 50);
                             topUsers.forEach(user => colorMap.set(user.name, '#' + (Math.random().toString(16) + '000000').substring(2, 8)));
-                            const initialDatasets = topUsers.map(user => ({ label: user.name, data: user.timeline.map(p => ({ x: p.timestamp, y: p.xp })), fill: false, borderColor: colorMap.get(user.name), borderWidth: 2, tension: 0.1 }));
+                            const initialDatasets = topUsers.map(user => ({
+                                label: user.name,
+                                data: user.timeline.map(p => ({ x: p.timestamp, y: p.xp })),
+                                fill: false,
+                                borderColor: colorMap.get(user.name),
+                                borderWidth: 2,
+                                tension: 0.1
+                            }));
                             const topGainers = [...summary].sort((a, b) => b.delta - a.delta).slice(0, 10);
                             const allXpValues = topUsers.flatMap(u => u.timeline.map(p => p.xp));
                             const globalMinXP = allXpValues.length > 0 ? Math.floor(Math.min(...allXpValues)) : 0;
@@ -769,7 +1066,7 @@
                                                 <label>Min Y: <input type="number" id="minY" value="\${paddedMinXP}"></label>
                                                 <label>Max Y: <input type="number" id="maxY" value="\${paddedMaxXP}"></label>
                                                 <button onclick="applyScale()">Zastosuj</button>
-                                                <label><input type="checkbox" id="logScaleToggle" onchange="toggleLogScale()"> Skala logarymiczna</label>
+                                                <label><input type="checkbox" id="logScaleToggle" onchange="toggleLogScale()"> Skala logarytmiczna</label>
                                             </div>
                                         </div>
                                         <div class="canvas-container"><canvas id="lineChart"></canvas></div>
@@ -793,51 +1090,47 @@
                             \`;
                             document.getElementById('dashboardContent').innerHTML = dashboardHTML;
 
-                            let lineChart, pieChart;
                             const formatTime24h = (date) => date.toLocaleTimeString('pl-PL', { hour12: false });
-                            function updateDashboard() {
-                                try {
-                                    let fullData;
-                                    try {
-                                        fullData = JSON.parse(localStorage.getItem(streamKey) || '{}');
-                                    } catch (error) {
-                                        console.error("[Dashboard] Błąd parsowania danych podczas aktualizacji dla klucza:", streamKey, error, "Dane:", localStorage.getItem(streamKey));
-                                        return;
-                                    }
-                                    const history = fullData.history || [];
-                                    if (history.length === 0) return;
-                                    const summary = _aggregateChangesPerUser(history);
-                                    const topUsers = summary.slice(0, 50);
-                                    document.getElementById('rankingTableBody').innerHTML = topUsers.map((u, i) => \`<tr><td>\${i + 1}</td><td><span class="color-swatch" style="background-color: \${colorMap.get(u.name) || '#ccc'}; display: inline-block; vertical-align: middle; margin-right: 8px;"></span>\${u.name}</td><td>\${u.end.toLocaleString()}</td><td>\${u.delta > 0 ? '+' : ''}\${u.delta.toLocaleString()}</td></tr>\`).join('');
-                                    const newDataMap = new Map(topUsers.map(u => [u.name, u.timeline.map(p => ({ x: p.timestamp, y: p.xp }))]));
-                                    lineChart.data.datasets.forEach(dataset => { if (newDataMap.has(dataset.label)) { dataset.data = newDataMap.get(dataset.label); } });
-                                    lineChart.update('none');
-                                    const topGainers = [...summary].sort((a, b) => b.delta - a.delta).slice(0, 10);
-                                    pieChart.data.labels = topGainers.map(u => u.name);
-                                    pieChart.data.datasets[0].data = topGainers.map(u => u.delta > 0 ? u.delta : 0);
-                                    pieChart.data.datasets[0].backgroundColor = topGainers.map(u => colorMap.get(u.name) || '#cccccc');
-                                    pieChart.update('none');
-                                    document.getElementById('lastUpdated').textContent = \`Ostatnia aktualizacja: \${formatTime24h(new Date())}\`;
-                                } catch (error) {
-                                    console.error("[Dashboard] Błąd podczas aktualizacji dashboardu:", error);
-                                }
-                            }
 
                             function initializeCharts() {
                                 try {
                                     const ctxLine = document.getElementById('lineChart').getContext('2d');
-                                    lineChart = new Chart(ctxLine, { type: 'line', data: { datasets: initialDatasets }, options: { animation: false, responsive: true, maintainAspectRatio: false, interaction: { intersect: false, mode: 'index' }, plugins: { title: { display: true, text: 'XP w czasie', color: '#eee', font: { size: 18 } }, legend: { display: false } }, scales: { x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy HH:mm:ss', displayFormats: { minute: 'HH:mm', hour: 'HH:mm' } }, ticks: { source: 'data', color: '#ccc', maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: 20 } }, y: { type: 'linear', ticks: { color: '#ccc' } } } } });
+                                    lineChart = new Chart(ctxLine, {
+                                        type: 'line',
+                                        data: { datasets: initialDatasets },
+                                        options: {
+                                            animation: false,
+                                            responsive: true,
+                                            maintainAspectRatio: false,
+                                            interaction: { intersect: false, mode: 'index' },
+                                            plugins: { title: { display: true, text: 'XP w czasie', color: '#eee', font: { size: 18 } }, legend: { display: false } },
+                                            scales: {
+                                                x: { type: 'time', time: { tooltipFormat: 'dd.MM.yyyy HH:mm:ss', displayFormats: { minute: 'HH:mm', hour: 'HH:mm' } }, ticks: { source: 'data', color: '#ccc', maxRotation: 45, minRotation: 45, autoSkip: true, maxTicksLimit: 20 } },
+                                                y: { type: 'linear', ticks: { color: '#ccc' } }
+                                            }
+                                        }
+                                    });
                                     const ctxPie = document.getElementById('pieChart').getContext('2d');
-                                    pieChart = new Chart(ctxPie, { type: 'pie', data: { labels: topGainers.map(u => u.name), datasets: [{ data: topGainers.map(u => u.delta > 0 ? u.delta : 0), backgroundColor: topGainers.map(u => colorMap.get(u.name) || '#cccccc') }] }, options: { animation: false, responsive: true, plugins: { legend: { position: 'top', labels: { color: '#eee' } } } } });
+                                    pieChart = new Chart(ctxPie, {
+                                        type: 'pie',
+                                        data: {
+                                            labels: topGainers.map(u => u.name),
+                                            datasets: [{ data: topGainers.map(u => u.delta > 0 ? u.delta : 0), backgroundColor: topGainers.map(u => colorMap.get(u.name) || '#cccccc') }]
+                                        },
+                                        options: { animation: false, responsive: true, plugins: { legend: { position: 'top', labels: { color: '#eee' } } } }
+                                    });
                                     updateDashboard();
-                                    setInterval(updateDashboard, 60 * 2000);
+                                    setInterval(updateDashboard, 3000); // Auto-odświeżanie co 3 sekundy
                                 } catch (error) {
                                     console.error("[Dashboard] Błąd podczas inicjalizacji wykresów:", error);
                                     document.getElementById('dashboardContent').innerHTML = '<div class="placeholder">Błąd podczas ładowania wykresów. Sprawdź konsolę (F12).</div>';
                                 }
                             }
 
-                            window.toggleUser = (index) => { lineChart.setDatasetVisibility(index, !lineChart.isDatasetVisible(index)); lineChart.update(); };
+                            window.toggleUser = (index) => {
+                                lineChart.setDatasetVisibility(index, !lineChart.isDatasetVisible(index));
+                                lineChart.update();
+                            };
                             window.applyScale = () => {
                                 const minVal = document.getElementById('minY').value;
                                 const maxVal = document.getElementById('maxY').value;
@@ -879,15 +1172,14 @@
             </html>
         `;
         try {
-            const blob = new Blob([viewerHTML], { type: 'text/html' });
+            const blob = new Blob([viewerHTML], { type: 'text/html;charset=utf-8' });
             const url = URL.createObjectURL(blob);
-            const videoId = streams.length > 0 ? streams[0].videoId : 'xp_tracker';
             const a = document.createElement('a');
             a.href = url;
-            a.download = `xp_tracker_${videoId}.html`;
+            a.download = `xp_tracker_${streams.length > 0 ? streams[0].videoId : 'xp_tracker'}.html`;
             a.click();
             URL.revokeObjectURL(url);
-            alert(`Dashboard został zapisany jako plik HTML: xp_tracker_${videoId}.html. Otwórz plik w przeglądarce, aby zobaczyć wykresy.`);
+            alert(`Dashboard został zapisany jako plik HTML: xp_tracker_${streams.length > 0 ? streams[0].videoId : 'xp_tracker'}.html. Otwórz plik w przeglądarce, aby zobaczyć wykresy.`);
         } catch (error) {
             console.error("[YT XP Tracker] Błąd podczas pobierania dashboardu jako HTML:", error);
             alert("Wystąpił błąd podczas zapisywania dashboardu. Sprawdź konsolę (F12).");
